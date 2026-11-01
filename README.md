@@ -13,7 +13,7 @@ A conversion is a **job** made of chained **tasks**:
 2. a processing task (`convert`, with an `output_format`);
 3. an export task (`export/url`), which returns a download link.
 
-You then poll `GET /jobs/{id}` until the job status is `finished` (or `error`), or register a webhook to be notified (`job.finished`, `job.failed`).
+Then call `GET /jobs/{id}/wait`: it answers as soon as the job is `finished` or `error`, or with `202` after about 30 seconds, in which case you call it again. You can also register a webhook (`job.finished`, `job.failed`). The download link in the export result is valid for 1 hour.
 
 ```json
 POST https://convertfly.io/api/v1/jobs
@@ -34,7 +34,7 @@ Authorization: Bearer cvfly_sk_...
 |---|---|---|
 | Python | [`examples/python/convert.py`](examples/python/convert.py) | Uploads a local file, converts it, downloads the result |
 | Node.js 18+ | [`examples/node/convert.mjs`](examples/node/convert.mjs) | Same flow, no dependencies |
-| curl + jq | [`examples/curl/convert-url.sh`](examples/curl/convert-url.sh) | Converts a file from a URL and prints the download link |
+| curl 7.76+ and jq | [`examples/curl/convert-url.sh`](examples/curl/convert-url.sh) | Converts a file from a URL and prints the download link |
 
 ```bash
 export CONVERTFLY_API_KEY=cvfly_sk_...
