@@ -5,28 +5,39 @@
 #   export CONVERTFLY_API_KEY=cvfly_sk_...
 #   ./convert-url.sh https://example.com/photo.png pdf
 set -euo pipefail
+
+[ $# -eq 2 ] || { echo "usage: $0 <file_url> <output_format>" >&2; exit 1; }
+: "${CONVERTFLY_API_KEY:?set CONVERTFLY_API_KEY first}"
+
 API=https://convertfly.io/api/v1
-URL=$1
-FORMAT=$2
 AUTH="Authorization: Bearer $CONVERTFLY_API_KEY"
 
-JOB=$(curl -sf -X POST "$API/jobs" -H "$AUTH" -H 'Content-Type: application/json' -d @- <<JSON | jq -r .id
-{"tasks": {
-  "import": {"operation": "import/url", "url": "$URL"},
-  "convert": {"operation": "convert", "input": "import", "output_format": "$FORMAT"},
-  "export": {"operation": "export/url", "input": "convert"}
-}}
-JSON
-)
-echo "job $JOB"
+# curl, with the API error message printed when the request fails.
+api() {
+  local body
+  body=$(curl -sS --fail-with-body "$@") || { echo "$body" >&2; return 1; }
+  printf "%s" "$body"
+}
 
+# jq builds the request body, so a URL with quotes or backslashes stays valid JSON.
+JOB=$(jq -n --arg url "$1" --arg format "$2" '{tasks: {
+  import:  {operation: "import/url", url: $url},
+  convert: {operation: "convert", input: "import", output_format: $format},
+  export:  {operation: "export/url", input: "convert"}
+}}' | api -X POST "$API/jobs" -H "$AUTH" -H 'Content-Type: application/json' -d @- | jq -er .id)
+echo "job $JOB" >&2
+
+# /wait answers 200 once the job is finished, 202 after about 30 s: ask again until 200.
 while :; do
-  STATE=$(curl -sf "$API/jobs/$JOB" -H "$AUTH")
-  STATUS=$(jq -r '.status | ascii_downcase' <<<"$STATE")
-  [ "$STATUS" = finished ] && break
-  FAILED=$(jq -r '[.tasks[]? // empty | select((.status // "" | ascii_downcase) == "error") | "\(.name): \(.error // .code)"] | first // empty' <<<"$STATE")
-  if [ "$STATUS" = error ] || [ -n "$FAILED" ]; then echo "job failed: ${FAILED:-unknown error}" >&2; exit 1; fi
-  sleep 1
+  STATE=$(api -w '\n%{http_code}' "$API/jobs/$JOB/wait" -H "$AUTH")
+  [ "${STATE##*$'\n'}" = 200 ] && break
 done
+STATE=${STATE%$'\n'*}
 
-jq -r '(.tasks | if type == "array" then map({(.name): .}) | add else . end).export.result.files[0].url' <<<"$STATE"
+if [ "$(jq -r .status <<<"$STATE")" != finished ]; then
+  # The task that failed first; the ones it blocked say DEPENDENCY_FAILED.
+  echo "job failed: $(jq -r '[.tasks[] | select(.status == "error")] | sort_by(.code == "DEPENDENCY_FAILED") | first | if . then "\(.name): \(.error // .code)" else "unknown error" end' <<<"$STATE")" >&2
+  exit 1
+fi
+
+jq -r '.tasks[] | select(.name == "export") | .result.files[0].url' <<<"$STATE"
